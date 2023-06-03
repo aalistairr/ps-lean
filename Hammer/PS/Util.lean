@@ -154,3 +154,8 @@ def liftMetaM (env : Environment) (m : MetaM α) : IO α := do
   return r
 
 def UInt64.max : UInt64 := 0xffffffffffffffff
+
+def prefixesOfName : Name → List Name
+| .anonymous => []
+| n@(.str p _) => n :: (prefixesOfName p)
+| n@(.num p _) => n :: (prefixesOfName p)

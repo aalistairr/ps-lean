@@ -22,62 +22,95 @@ open Hammer.PS.MaSh
 open Hammer.PS.MeSh
 
 
-def withMaxHeartbeats (maxHeartbeats : Nat) (x : CommandElabM α) : CommandElabM α := do
-  let oldMaxHeartbeats := (←getOptions).getNat `maxHearbeats
-  let options := (←getOptions).setNat `maxHeartbeats maxHeartbeats
-  modifyScope fun scope => { scope with opts := options }
-  let a ← x
-  let options := (←getOptions).setNat `maxHeartbeats oldMaxHeartbeats
-  modifyScope fun scope => { scope with opts := options }
-  return a
-
-
 def getPStateDir : IO System.FilePath :=
   return (←IO.currentDir) / "build"
 
 def getPStatePath : IO System.FilePath :=
   return (←getPStateDir) / "Hammer.PS.PState.olean"
 
+def getPStatePathLock : IO System.FilePath :=
+  return (←getPStateDir) / "Hammer.PS.PState.olean.locked"
 
 
-unsafe def unsafeLearnCommand : CommandElabM PUnit := do
-  withMaxHeartbeats 999999999999999 do
-    let pstatePath ← getPStatePath
+-- no references to objects in PState may be alive when this function returns
+unsafe def withPState {m : Type → Type} [Monad m] [MonadLiftT IO m] [MonadLiftT BaseIO m] [MonadFinally m] (f : PState → m α) : m α := do
+  let pstatePath ← getPStatePath
 
-    let (pstate, pstateCompactedRegion?) ←
-      if ←pstatePath.pathExists then
-        match ←readPState pstatePath with
-        | .ok (pstate, pstateCompactedRegion) => pure (pstate, some pstateCompactedRegion)
-        | .error .toolchainVersionChanged => pure (∅, none)
-        | .error .pstateVersionChanged => pure (∅, none)
-      else
-        pure (∅, none)
+  let (pstate, pstateCompactedRegion?) ←
+    if ←pstatePath.pathExists then
+      match ←readPState pstatePath with
+      | .ok (pstate, pstateCompactedRegion) => pure (pstate, some pstateCompactedRegion)
+      | .error .toolchainVersionChanged => pure (∅, none)
+      | .error .pstateVersionChanged => pure (∅, none)
+    else
+      pure (∅, none)
 
-    let imports := (←getEnv).header.imports
+  try f pstate
+  finally
+    if let some pstateCompactedRegion := pstateCompactedRegion? then
+      pstateCompactedRegion.free
+
+
+-- no references to objects in PState may be alive when this function returns
+unsafe def tryWithLockedPState (f : PState → IO PUnit) : IO Bool := do
+  try
+    let pstatePathLock ← getPStatePathLock
+
+    IO.FS.createDir pstatePathLock
+
+    try withPState f
+    finally IO.FS.removeDir pstatePathLock
+
+    return true
+  catch _ =>
+    return false
+
+unsafe def learnImportsOf (env : Environment) : IO PUnit := do
+  -- don't care if we couldn't lock, user will eventually try again
+  let _ ← tryWithLockedPState λpstate => do
+    let imports := env.header.imports
       |>.foldl (λimports importt => imports.insert importt.module) (∅ : NameSet)
-  
-    let (didUpdate, pstate) ← liftCoreM $
+
+    let ((didUpdate, pstate), _) ←
       PStateM.updateImports imports
         |>.run pstate
         |>.run' default
         |>.run'
+        |>.toIO
+          {
+            fileName := "<anonymous>"
+            fileMap := FileMap.mk "" #[] #[]
+            maxHeartbeats := 9999999999999999999
+          }
+          { env }
 
     if didUpdate then
       IO.FS.createDirAll (←getPStateDir)
       savePState (←getPStatePath) pstate
 
-    -- no references to objects in pstate must be used beyond this point
-    if let some pstateCompactedRegion := pstateCompactedRegion? then
-      pstateCompactedRegion.free
+initialize learningEnvs : IO.Channel Environment ← IO.Channel.new
+initialize learningExceptions : IO.Mutex (Array IO.Error) ← IO.Mutex.new ∅
 
-@[implemented_by unsafeLearnCommand]
-opaque learnCommand : CommandElabM PUnit
+unsafe def unsafeLearningTaskAct' : IO PUnit := do
+  for env in learningEnvs.sync do
+    learnImportsOf env
+    env.freeRegions
 
-elab "Hammer.PS.learn" : command => learnCommand
+@[implemented_by unsafeLearningTaskAct']
+opaque learningTaskAct' : IO PUnit
 
+def learningTaskAct : BaseIO PUnit := do
+  while True do
+    if let .error e ← learningTaskAct'.toBaseIO then
+      learningExceptions.atomically do
+        modify (Array.push . e)
 
-elab "Hammer.PS.reset" : command => do
-  resetPState (←getPStatePath)
+initialize learningTask? : IO.Mutex (Option (Task PUnit)) ← IO.Mutex.new none
+
+def ensureLearningTaskIsSpawned : IO PUnit := do
+  learningTask?.atomically do
+    if let none ← get then
+      set $ some $ ←BaseIO.asTask learningTaskAct
 
 
 def factIdxToConstant (pstate : PState) (factIdx : UInt64) : MetaM (Option ConstantInfo) :=
@@ -89,43 +122,38 @@ def suggestionToConstant (pstate : PState) : (UInt64 × Float) → TacticM (Opti
   | some c => return (c, score)
   | none => return none
 
-unsafe def unsafeGetSuggestions (x : PState → Array UInt64 → TacticM (Array (UInt64 × Float))) : TacticM (Array (ConstantInfo × Float)) := do
-  let pstatePath ← getPStatePath
+unsafe def unsafeGetSuggestions (x : PState → Array UInt64 → TacticM (Array (UInt64 × Float))) : TacticM (Option (Array (ConstantInfo × Float)) ):= do
+  ensureLearningTaskIsSpawned
 
-  let (pstate, pstateCompactedRegion?) ←
-    if ←pstatePath.pathExists then
-      match ←readPState pstatePath with
-      | .ok (pstate, pstateCompactedRegion) => pure (pstate, some pstateCompactedRegion)
-      | .error .toolchainVersionChanged =>
-          throwError m!"A different version of the Lean toolchain is being used than the one that created the premise selection state on disk. Place the {`Hammer.PS.learn} command at the top level of the current file (e.g. directly below the import commands) to rebuild the state."
-      | .error .pstateVersionChanged =>
-          throwError m!"A different version of the premise selection state is required than the one that is saved on disk. Place the {`Hammer.PS.learn} command at the top level of the current file (e.g. directly below the import commands) to rebuild the state."
-    else
-      pure (∅, none)
-  
-  let imports := (←getEnv).header.imports
-  let constants := (←getEnv).constants.map₂.foldl (λconstants _ c => constants.push c) ∅
-  
-  let (pstate, mainModuleIdx) ← pstate.updateMainModule (←getMainModule) imports constants
-  let candidateFacts := pstate.candidateFacts mainModuleIdx
+  let backgroundExceptions ← learningExceptions.atomically $ modifyGet λes => (es, ∅)
+  for e in backgroundExceptions do
+    logWarning m!"An exception occurred during background learning: {e}"
 
-  let suggestions ← x pstate candidateFacts
-  let suggestions ← suggestions.filterMapM (suggestionToConstant pstate)
+  withPState λpstate => do
+    let imports := (←getEnv).header.imports
+
+    if ←pstate.haveModifiedImports imports then
+      logInfo m!"Learning new facts in the background... This may take a while depending on how many modules have changed. Try again in a bit"
+      learningEnvs.send $ ←importModules imports.toList .empty
+      return none
+
+    let constants := (←getEnv).constants.map₂.foldl (λconstants _ c => constants.push c) ∅
   
-  -- no references to objects in pstate must be used beyond this point
-  if let some pstateCompactedRegion := pstateCompactedRegion? then
-    pstateCompactedRegion.free
-  
-  return suggestions
+    let (pstate, mainModuleIdx) ← pstate.updateMainModule (←getMainModule) imports constants
+    let candidateFacts := pstate.candidateFacts mainModuleIdx
+
+    let suggestions ← x pstate candidateFacts
+    let suggestions ← suggestions.filterMapM (suggestionToConstant pstate)
+    return suggestions
 
 @[implemented_by unsafeGetSuggestions]
-opaque getSuggestions : (PState → Array UInt64 → TacticM (Array (UInt64 × Float))) → TacticM (Array (ConstantInfo × Float))
+opaque getSuggestions : (PState → Array UInt64 → TacticM (Array (UInt64 × Float))) → TacticM (Option (Array (ConstantInfo × Float)))
 
 
 def getGoalSymbols (pstate : PState) : TacticM (Array UInt64) := do
-  let goalSymbols ← getFactSymbols' (←getMainModule) (←getMainTarget)
+  let goalSymbols ← getFactSymbols' (←getMainModule) (←getDeclName?) (←getMainTarget)
   let goalSymbols ← (←getMCtx).decls.foldlM
-    (λgoalSymbols _ mdecl => return (←getFactSymbols' (←getMainModule) mdecl.type).fold .insert goalSymbols)
+    (λgoalSymbols _ mdecl => return (←getFactSymbols' (←getMainModule) (←getDeclName?) mdecl.type).fold .insert goalSymbols)
     goalSymbols
 
   return goalSymbols.fold
@@ -161,13 +189,13 @@ def getMePoSuggestions'' (pstate : PState) (candidateFacts : Array UInt64) (goal
 def getMePoSuggestions' (pstate : PState) (candidateFacts : Array UInt64) : TacticM (Array (UInt64 × Float)) := do
   getMePoSuggestions'' pstate candidateFacts (←getGoalSymbols pstate)
 
-def getMePoSuggestions : TacticM (Array (ConstantInfo × Float)) :=
+def getMePoSuggestions : TacticM (Option (Array (ConstantInfo × Float))) :=
   getSuggestions getMePoSuggestions'
 
 elab "mepo" : tactic => do
-  let suggestions ← getMePoSuggestions
-  for (suggestion, score) in suggestions do
-    logInfo m!"{suggestion.name}: {score}"
+  if let some suggestions ← getMePoSuggestions then
+    for (suggestion, score) in suggestions do
+      logInfo m!"{suggestion.name}: {score}"
 
 
 def getMaShNBSuggestions'' (pstate : PState) (candidateFacts : Array UInt64) (goalFeatures : Array UInt64) : IO (Array (UInt64 × Float)) := do
@@ -184,13 +212,13 @@ def getMaShNBSuggestions'' (pstate : PState) (candidateFacts : Array UInt64) (go
 def getMaShNBSuggestions' (pstate : PState) (candidateFacts : Array UInt64) : TacticM (Array (UInt64 × Float)) := do
   getMaShNBSuggestions'' pstate candidateFacts (←getGoalFeatures pstate)
 
-def getMaShNBSuggestions : TacticM (Array (ConstantInfo × Float)) :=
+def getMaShNBSuggestions : TacticM (Option (Array (ConstantInfo × Float))) :=
   getSuggestions getMaShNBSuggestions'
 
 elab "mashnb" : tactic => do
-  let suggestions ← getMaShNBSuggestions
-  for (suggestion, score) in suggestions do
-    logInfo m!"{suggestion.name}: {score}"
+  if let some suggestions ← getMaShNBSuggestions then
+    for (suggestion, score) in suggestions do
+      logInfo m!"{suggestion.name}: {score}"
 
 
 def getMaShKNNSuggestions'' (pstate : PState) (candidateFacts : Array UInt64) (goalFeatures : Array UInt64) : IO (Array (UInt64 × Float)) := do
@@ -208,16 +236,16 @@ def getMaShKNNSuggestions'' (pstate : PState) (candidateFacts : Array UInt64) (g
 def getMaShKNNSuggestions' (pstate : PState) (candidateFacts : Array UInt64) : TacticM (Array (UInt64 × Float)) := do
   getMaShKNNSuggestions'' pstate candidateFacts (←getGoalFeatures pstate)
 
-def getMaShKNNSuggestions : TacticM (Array (ConstantInfo × Float)) :=
+def getMaShKNNSuggestions : TacticM (Option (Array (ConstantInfo × Float))) :=
   getSuggestions getMaShKNNSuggestions'
 
 elab "mashknn" : tactic => do
-  let suggestions ← getMaShKNNSuggestions
-  for (suggestion, score) in suggestions do
-    logInfo m!"{suggestion.name}: {score}"
+  if let some suggestions ← getMaShKNNSuggestions then
+    for (suggestion, score) in suggestions do
+      logInfo m!"{suggestion.name}: {score}"
 
 
-def getMeShSuggestions : TacticM (Array (ConstantInfo × Float)) :=
+def getMeShSuggestions : TacticM (Option (Array (ConstantInfo × Float))) :=
   getSuggestions λpstate candidateFacts => do
     let goalSymbols ← getGoalSymbols pstate
     let goalFeatures ← getGoalFeatures pstate
@@ -239,6 +267,6 @@ def getMeShSuggestions : TacticM (Array (ConstantInfo × Float)) :=
     ]
 
 elab "mesh" : tactic => do
-  let suggestions ← getMeShSuggestions
-  for (suggestion, score) in suggestions do
-    logInfo m!"{suggestion.name}: {score}"
+  if let some suggestions ← getMeShSuggestions then
+    for (suggestion, score) in suggestions do
+      logInfo m!"{suggestion.name}: {score}"

@@ -140,14 +140,12 @@ def exprFeatures (x : Expr) : MetaM FeatureSet := do
 
   return features
 
-def prefixesOfName : Name → List Name
-| .anonymous => []
-| n@(.str p _) => n :: (prefixesOfName p)
-| n@(.num p _) => n :: (prefixesOfName p)
-
 def getFactFeatures' (moduleName : Name) (goalName? : Option Name) (goalType : Expr) : MetaM FeatureSet := do
   let mut features ← exprFeatures goalType
   features := features.insert moduleName.toString
+  if let some goalName := goalName? then
+    for prefixx in prefixesOfName goalName.getPrefix do
+      features := features.insert prefixx.toString
   return features
 
 def getFactFeatures (module : Name) (constantInfo : ConstantInfo) (fact : Expr) : MetaM FeatureSet :=

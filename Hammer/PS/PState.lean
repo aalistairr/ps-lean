@@ -217,10 +217,13 @@ def getTypeOrder (sym : Name) : PStateM UInt8 := do
   return order.toUInt8
 
 
-def getFactSymbols' (moduleName : Name) (factType : Expr) : MetaM NameSet := do
+def getFactSymbols' (moduleName : Name) (goalName? : Option Name) (factType : Expr) : MetaM NameSet := do
   let mut syms ← getExprSymbols factType
 
   syms := syms.insert $ modulifySymbol moduleName
+  if let some goalName := goalName? then
+    for prefixx in prefixesOfName goalName.getPrefix do
+      syms := syms.insert $ modulifySymbol prefixx
 
   for sym in syms do
     if isStructure (←getEnv) sym then
@@ -244,8 +247,8 @@ def getFactSymbols' (moduleName : Name) (factType : Expr) : MetaM NameSet := do
     |>.filter env.contains
     |>.foldl NameSet.insert ∅
 
-def getFactSymbols (moduleName : Name) (fact : Expr) : MetaM NameSet :=
-  getFactSymbols' moduleName fact
+def getFactSymbols (moduleName : Name) (goalName? : Option Name) (fact : Expr) : MetaM NameSet :=
+  getFactSymbols' moduleName goalName? fact
 
 
 def PStateM.findOrAddSymbol (sym : Sym) : PStateM UInt64 := do
@@ -359,12 +362,12 @@ def PStateM.learnFact
 
   let factSymbols ← match factSymbols with
   | some factSymbols => pure factSymbols
-  | none => getFactSymbols moduleName fact
+  | none => getFactSymbols moduleName constantInfo.name fact
   let factSymbols ← consolidateFactSymbols factSymbols
 
-  let factProofSymbols? ← match (isProp, constantInfo.value?) with
-  | (true, some proof) => pure $ some $ ←consolidateFactSymbols $ ←getFactSymbols moduleName proof
-  | _ => pure none
+  -- let factProofSymbols? ← match (isProp, constantInfo.value?) with
+  -- | (true, some proof) => pure $ some $ ←consolidateFactSymbols $ ←getFactSymbols moduleName proof
+  -- | _ => pure none
 
   let factFeatures ← match factFeatures with
   | some factFeatures => pure factFeatures
@@ -415,9 +418,9 @@ def PStateM.learnFact
       for factSymbol in factSymbols do
         symbolFreqs := symbolFreqs.modify factSymbol.toNat (. + 1)
       
-      if let some factProofSymbols := factProofSymbols? then
-        for proofSymbol in factProofSymbols do
-          symbolFreqs := symbolFreqs.modify proofSymbol.toNat (. + 1)
+      -- if let some factProofSymbols := factProofSymbols? then
+      --   for proofSymbol in factProofSymbols do
+      --     symbolFreqs := symbolFreqs.modify proofSymbol.toNat (. + 1)
 
       return symbolFreqs
   }
@@ -555,6 +558,21 @@ def PStateM.updateImports (imports : NameSet) : PStateM Bool := do
 
 
 def fakeMtime := IO.FS.SystemTime.mk 0 0
+
+
+def PStateM.haveModifiedImports (moduleImports : Array Import) : PStateM Bool := do
+  let moduleImportsSet := moduleImports
+    |>.map Import.module
+    |>.foldl .insert (∅ : NameSet)
+
+  let moduleMap := getModuleMap (←getEnv)
+  let modifiedImports ← getModifiedImports moduleMap moduleImportsSet
+
+  return !modifiedImports.isEmpty
+
+def PState.haveModifiedImports (pstate : PState) (moduleImports : Array Import) : MetaM Bool := do
+  PStateM.haveModifiedImports moduleImports |>.run' pstate |>.run' default
+
 
 def PStateM.updateMainModule
   (moduleName : Name)

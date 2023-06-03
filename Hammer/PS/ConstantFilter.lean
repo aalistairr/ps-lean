@@ -18,11 +18,15 @@ def excludeModule : Name → Bool
 def boringSymbols := [``True, ``False, ``And, ``Or, ``Not, ``Eq, ``HEq, ``Ne, `Iff, ``Exists, ``ite, ``Decidable, ``dite]
   |>.foldl NameSet.insert ∅
 
-def dealbreakingSymbols : List Name := []
+def dealbreakingSymbols : List Name := [``sorryAx]
 
 def isBoringOrDealbreakingFact (c : ConstantInfo) : Bool :=
-  let syms := Lean.Expr.getUsedConstants c.type
-  syms.all boringSymbols.contains || syms.any dealbreakingSymbols.contains
+  let typeSyms := Lean.Expr.getUsedConstants c.type
+  let valueSyms := c.value?.map (. |>.getUsedConstants) |>.getD ∅
+
+  typeSyms.all boringSymbols.contains
+  || typeSyms.any dealbreakingSymbols.contains
+  || valueSyms.any dealbreakingSymbols.contains
 
 def isAlias (c : ConstantInfo) : Bool := match c.value? with
 | some (.const _ _) => true
