@@ -59,14 +59,20 @@ partial def constantFeature : Expr → MetaM (Option Feature)
 | .lit (.natVal n) => pure $ toString n
 | .lit (.strVal s) => pure s
 | .proj typeName idx _ => return (getUnaliased (←getEnv) typeName).toString ++ "." ++ (toString idx)
-| .mdata _ x => constantFeature x
+| .mdata _ x => constantFeature x.getAppFn
 | x@(.bvar _) => throwError m!"constantFeature: don't know what to do with .bvar expression {x}"
 | x@(.app _ _) => throwError m!"constantFeature: don't know what to do with .app expression {x}"
+
+def stripMdata : Expr → Expr
+| .mdata _ x => stripMdata x
+| x => x
 
 partial def featurePatternsOf (depth : Nat) (x : Expr) : MetaM (Option (FeatureSet × Option Feature)) := do
   if depth == 0 then
     return none
-  
+
+  let x := stripMdata x
+
   let typeFeature ←
     try crudeType $ ←inferType x
     catch _ => return none -- `inferType` may fail for some expressions. This does not happen often so just ignore
