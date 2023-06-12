@@ -7,33 +7,34 @@ namespace Hammer.PS
 open Lean
 
 
-def excludeConstantName : Name → Bool
+def isExcludedConstantName : Name → Bool
 | .str _ s => s.startsWith "_cstage" -- type inference fails on these constants
 | _ => false
 
-def excludeModule : Name → Bool
+def isExcludeModule : Name → Bool
 | `Mathlib.Data.TypeVec => true -- feature extraction fails on this module
 | _ => false
 
 def boringSymbols := [``True, ``False, ``And, ``Or, ``Not, ``Eq, ``HEq, ``Ne, `Iff, ``Exists, ``ite, ``Decidable, ``dite]
   |>.foldl NameSet.insert ∅
 
-def dealbreakingSymbols : List Name := [``sorryAx]
+def dealbreakingSymbols : NameSet := ∅
 
 def isBoringOrDealbreakingFact (c : ConstantInfo) : Bool :=
-  let typeSyms := Lean.Expr.getUsedConstants c.type
+  let typeSyms := c.type.getUsedConstants
   let valueSyms := c.value?.map (. |>.getUsedConstants) |>.getD ∅
 
   typeSyms.all boringSymbols.contains
   || typeSyms.any dealbreakingSymbols.contains
   || valueSyms.any dealbreakingSymbols.contains
 
-def isAlias (c : ConstantInfo) : Bool := match c.value? with
-| some (.const _ _) => true
-| _ => false
+def isAlias (c : ConstantInfo) : Bool :=
+  if let some (.const _ _) := c.value?
+    then true
+    else false
 
 def excludeConstant (module : Name) (c : ConstantInfo) : Bool :=
-     excludeModule module
-  || excludeConstantName c.name
+     isExcludeModule module
+  || isExcludedConstantName c.name
   || isAlias c
   || isBoringOrDealbreakingFact c

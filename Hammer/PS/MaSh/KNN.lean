@@ -56,7 +56,7 @@ def initState (ctx : Context) : State := {
 
 abbrev KNNM := ReaderT Context $ StateT State IO
 
-instance : MonadReaderOfClassifierContext KNNM where
+instance : MonadClassifierContext KNNM where
   readFactCount := return (←read).pstate.factNames.size.toUInt64
   readFeatureFreqs := return (←read).pstate.featureFreqs
 
@@ -130,29 +130,20 @@ def doK (overlapsSqr : Array (UInt64 × Float)) : KNNM Bool := do
 
   return true
 
-partial def while1 (overlapsSqr : Array (UInt64 × Float)) : KNNM PUnit := do
-  if (←get).k == (←readFudge).initialK + 1 then
-    return
-
-  if ←doK overlapsSqr then
-    while1 overlapsSqr
-
-partial def while2 (overlapsSqr : Array (UInt64 × Float)) : KNNM PUnit := do
-  if (←get).noRecommends >= (←read).maxFacts then
-    return
-  
-  if ←doK overlapsSqr then
-    modify λs => { s with age := s.age - 10000.0 }
-    while2 overlapsSqr
-
 def resultGt : (UInt64 × Float) → (UInt64 × Float) → Bool
 | (_, a), (_, b) => a > b
 
 def kNN : KNNM (Array (UInt64 × Float)) := do
   let overlapsSqr ← getOverlapsSqr
   
-  while1 overlapsSqr
-  while2 overlapsSqr
+  while (←get).k < (←readFudge).initialK + 1 do
+    if !(←doK overlapsSqr) then
+      break
+
+  while (←get).noRecommends >= (←read).maxFacts do
+    if !(←doK overlapsSqr) then
+      break
+    modify λs => { s with age := s.age - 10000.0 }
 
   let mut results := Array.mkEmpty (←read).maxFacts.toNat
   for (i, ov) in (←get).recommends do

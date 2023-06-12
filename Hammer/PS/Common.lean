@@ -59,7 +59,7 @@ def ExprSubtermsM.queue (x : Expr) : ExprSubtermsM PUnit := do
   if ¬(←isFullyImplicitlyInstantiatedApp x) then
     modify λs => { s with pending := s.pending.push x }
 
-def ExprSubtermsM.visit : Expr → ExprSubtermsM PUnit
+def ExprSubtermsM.visitPending : Expr → ExprSubtermsM PUnit
 | .app fn arg => do
   admit arg
   queue arg
@@ -83,7 +83,7 @@ def ExprSubtermsM.visit : Expr → ExprSubtermsM PUnit
 partial def ExprSubtermsM.aux : ExprSubtermsM ExprSet := do
   let next? ← modifyGet λs => (s.pending.back?, { s with pending := s.pending.pop })
   if let some next := next? then
-    visit next
+    visitPending next
     aux
   else
     return (←get).subterms
@@ -99,34 +99,6 @@ def exprSubterms (x : Expr) : MetaM ExprSet :=
 abbrev Sym := Name
 abbrev SymMap := NameMap
 
-def simpleExprSymbols (x : Expr) : NameSet := Id.run do
-    let mut syms := NameSet.empty
-    for sym in Lean.Expr.getUsedConstants x do
-      if sym == `_neutral ∨ sym == `_obj ∨ sym == `_unreachable ∨ sym == `outParam ∨ sym == `namedPattern then
-        continue
-      else if sym == `Ne then
-        syms := syms.insert `Not
-        syms := syms.insert `Eq
-      else
-        syms := syms.insert sym
-    return syms
-
-def exprSymbols (x : Expr) : MetaM NameSet := do
-  let mut syms := simpleExprSymbols x
-
-  for sym in syms do
-    if isStructure (←getEnv) sym then
-      for parent in getAllParentStructures (←getEnv) sym do
-        syms := syms.insert parent
-
-  for subterm in ←exprSubterms x do
-    let type ← inferType (←whnfD subterm)
-    for sym in simpleExprSymbols type do
-      syms := syms.insert sym
-
-  return syms
-
-
 def getPropifiedDef (c : ConstantInfo) : MetaM (Option Expr) := do
   let rhs ← match c.value? with
   | some value => pure value
@@ -139,7 +111,7 @@ def getPropifiedDef (c : ConstantInfo) : MetaM (Option Expr) := do
     | .sort u => pure u
     | x => throwError "getPropifiedDef {c.name} type of {eqType} is not a sort: {x}"
 
-    let eq := Expr.const ``Eq [level] |>.app eqType |>.app lhs |>.app rhs
+    let eq := mkAppN (Expr.const ``Eq [level]) #[eqType, lhs, rhs]
     mkForallFVars xs eq
 
 def getFact (module : Name) (c : ConstantInfo) : MetaM (Option (Expr × Bool)) := do

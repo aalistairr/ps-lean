@@ -152,6 +152,9 @@ opaque getSuggestions : (PState → Array UInt64 → TacticM (Array (UInt64 × F
 
 def getGoalSymbols (pstate : PState) : TacticM (Array UInt64) := do
   let goalSymbols ← getFactSymbols' (←getMainModule) (←getDeclName?) (←getMainTarget)
+
+  -- Lean doesn't appear to have an easy way to retrieve metavariables that
+  -- pertain specifically to the goal, so optimistically use all declared metavariables
   let goalSymbols ← (←getMCtx).decls.foldlM
     (λgoalSymbols _ mdecl => return (←getFactSymbols' (←getMainModule) (←getDeclName?) mdecl.type).fold .insert goalSymbols)
     goalSymbols

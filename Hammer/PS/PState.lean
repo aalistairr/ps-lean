@@ -136,11 +136,13 @@ def getModifiedImports (moduleMap : ModuleMap) (imports : NameSet) : PStateM Nam
     |>.run' { modifiedModules := ∅, pending := imports }
 
 
+def ignoreExprSymbols : NameSet := [`_neutral, `_obj, `_unreachable, `outParam, `namedPattern].foldl .insert ∅
+
 def getExprSymbols [Monad m] [MonadEnv m] (x : Expr) : m NameSet := do
   let mut syms := ∅
   
   for sym in getUsedConstantsTR x do
-    if sym == `_neutral ∨ sym == `_obj ∨ sym == `_unreachable ∨ sym == `outParam ∨ sym == `namedPattern then
+    if ignoreExprSymbols.contains sym then
       continue
     else if sym == `Ne then
       syms := syms.insert `Not
@@ -209,11 +211,11 @@ def getTypeOrder (sym : Name) : PStateM UInt8 := do
 
   let type ← match (←getEnv).find? sym with
   | some c => pure c.type
-  | none => do panic! (←m!"Couldn't find constant for symbol {sym}".toString)
+  | none => throwError m!"Couldn't find constant for symbol {sym}"
 
   let order := getTypeOrder' type
   if order >= 256 then
-    panic! (←m!"Order of symbol {sym} type `{type}` does not fit in a UInt8".toString)
+    throwError m!"Order of symbol {sym} type `{type}` does not fit in a UInt8"
   return order.toUInt8
 
 
@@ -235,17 +237,19 @@ def getFactSymbols' (moduleName : Name) (goalName? : Option Name) (factType : Ex
       Lean.Meta.inferType subterm
     catch _ =>
       try
+        -- try to infer type for whnf subterm in case it works for some reason
         Lean.Meta.inferType $ ←Lean.Meta.whnfD subterm
       catch _ =>
         continue
-    for sym in simpleExprSymbols type do
+    for sym in ←getExprSymbols type do
       syms := syms.insert sym
 
   let env ← getEnv
-  return syms
-    |>.toArray
-    |>.filter env.contains
-    |>.foldl NameSet.insert ∅
+  return syms.fold
+    (λsyms sym => if env.contains sym
+      then syms.insert sym
+      else syms)
+    ∅
 
 def getFactSymbols (moduleName : Name) (goalName? : Option Name) (fact : Expr) : MetaM NameSet :=
   getFactSymbols' moduleName goalName? fact

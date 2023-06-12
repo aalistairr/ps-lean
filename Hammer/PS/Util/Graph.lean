@@ -30,9 +30,9 @@ def NameDiGraph.containsEdge (graph : NameDiGraph) (src dst : Name) : Bool :=
 
 def NameDiGraph.insertEdge (graph : NameDiGraph) (src dst : Name) : NameDiGraph := Id.run do
   if ¬graph.containsNode src then
-    panic! "Attempting to inserting edge " ++ src.toString ++ " -> " ++ dst.toString ++ " but " ++ src.toString ++ " does not exist"
+    panic! "Attempting to insert edge " ++ src.toString ++ " -> " ++ dst.toString ++ " but " ++ src.toString ++ " does not exist"
   if ¬graph.containsNode dst then
-    panic! "Attempting to inserting edge " ++ src.toString ++ " -> " ++ dst.toString ++ " but " ++ dst.toString ++ " does not exist"
+    panic! "Attempting to insert edge " ++ src.toString ++ " -> " ++ dst.toString ++ " but " ++ dst.toString ++ " does not exist"
   assert! graph.containsNode src
   assert! graph.containsNode dst
   assert! !(graph.containsEdge src dst)

@@ -49,9 +49,7 @@ def crudeType : Expr → MetaM (Option Feature)
 | _ => pure none
 
 partial def constantFeature : Expr → MetaM (Option Feature)
-| x@(.letE _ _ _ _ _) => do
-  let (_, _, body) ← letMetaTelescope x
-  constantFeature body.getAppFn
+| x@(.letE _ _ _ _ _) => lambdaLetTelescope x (λ_ body => constantFeature body.getAppFn)
 | .const name _ => return (getUnaliased (←getEnv) name).toString
 | .mvar mvarId => return ←crudeType (←mvarId.getType)
 | .fvar fvarId => return ←crudeType (←fvarId.getType)
@@ -61,7 +59,7 @@ partial def constantFeature : Expr → MetaM (Option Feature)
 | .lit (.natVal n) => pure $ toString n
 | .lit (.strVal s) => pure s
 | .proj typeName idx _ => return (getUnaliased (←getEnv) typeName).toString ++ "." ++ (toString idx)
-|   (.mdata _ _) => pure none
+| .mdata _ x => constantFeature x
 | x@(.bvar _) => throwError m!"constantFeature: don't know what to do with .bvar expression {x}"
 | x@(.app _ _) => throwError m!"constantFeature: don't know what to do with .app expression {x}"
 
@@ -71,7 +69,7 @@ partial def featurePatternsOf (depth : Nat) (x : Expr) : MetaM (Option (FeatureS
   
   let typeFeature ←
     try crudeType $ ←inferType x
-    catch _ => return none
+    catch _ => return none -- `inferType` may fail for some expressions. This does not happen often so just ignore
   let mut normalFeatures := ∅
 
 
@@ -99,6 +97,7 @@ partial def featurePatternsOf (depth : Nat) (x : Expr) : MetaM (Option (FeatureS
 
   return some (normalFeatures, typeFeature)
 
+-- return the type of `x` when it is not prefixed by any binders
 def fullyAppliedTypeOf (x : Expr) : MetaM (Option Expr) := do
   let type ←
     try inferType x
@@ -160,12 +159,12 @@ def extendedFeatures' (factFeatures : Array (Array UInt64)) (factInProofsOf : Ar
   return features.toArray
 
 
-class MonadReaderOfClassifierContext (m : Type → Type) where
+class MonadClassifierContext (m : Type → Type) where
   readFactCount : m UInt64
   readFeatureFreqs : m (Array UInt64)
 
-def w [Monad m] [MonadReaderOfClassifierContext m] (feature : UInt64) : m Float := do
-  let factCount ← MonadReaderOfClassifierContext.readFactCount
-  let featureFreqs ← MonadReaderOfClassifierContext.readFeatureFreqs
+def w [Monad m] [MonadClassifierContext m] (feature : UInt64) : m Float := do
+  let factCount ← MonadClassifierContext.readFactCount
+  let featureFreqs ← MonadClassifierContext.readFeatureFreqs
   let featureFreq := featureFreqs[feature.toNat]!
   return (factCount.toFloat / featureFreq.toFloat).log

@@ -83,12 +83,12 @@ def Counter.inc (c : Counter) : (Bool × Counter) := Id.run do
   })
 
 
-partial def productNAux [Inhabited α] (ls : List (List α)) (c : Counter) : StateM (List (List α)) PUnit := do
+partial def productNAux [Inhabited α] (ls : List (List α)) (c : Counter) : StateM (Array (List α)) PUnit := do
   let mut r := ∅
   for (l, i) in List.zip ls c.values.toList do
     if i < l.length then
-      r := r ++ [l.get! i] 
-  modify λrs => rs ++ [r]
+      r := r ++ [l.get! i]
+  modify (·.push r)
 
   let (rollover, c') := c.inc
   if rollover
@@ -96,23 +96,16 @@ partial def productNAux [Inhabited α] (ls : List (List α)) (c : Counter) : Sta
     else productNAux ls c'
 
 def productN [Inhabited α] (ls : List (List α)) : List (List α) :=
-  productNAux ls (mkCounter ls) |>.run [] |>.snd
-
-
-def _root_.Array.count (xs : Array α) (p : α → Bool) : Nat := Id.run do
-  let mut n := 0
-  for x in xs do
-    if p x then
-      n := n + 1
-  return n
+  productNAux ls (mkCounter ls) |>.run #[] |>.snd |>.toList
 
 
 abbrev ModuleMap := NameMap ModuleData
 
-def getModuleMap (env : Environment) : ModuleMap :=
-  env.header.moduleNames.size.fold
-    (λi moduleMap => moduleMap.insert env.header.moduleNames[i]! env.header.moduleData[i]!)
-    ∅
+def getModuleMap (env : Environment) : ModuleMap := Id.run do
+  let mut moduleMap := ∅
+  for i in [:env.header.moduleNames.size] do
+    moduleMap := moduleMap.insert env.header.moduleNames[i]! env.header.moduleData[i]!
+  return moduleMap
 
 
 def getModuleDAG (moduleMap : ModuleMap) : NameDiGraph := Id.run do

@@ -40,7 +40,7 @@ structure Context where
 
 abbrev MashNBM := ReaderT Context IO
 
-instance : MonadReaderOfClassifierContext MashNBM where
+instance : MonadClassifierContext MashNBM where
   readFactCount := return (←read).pstate.factCount.toUInt64
   readFeatureFreqs := return (←read).pstate.featureFreqs
 

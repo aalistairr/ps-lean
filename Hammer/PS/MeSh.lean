@@ -19,20 +19,18 @@ def steepWeightOfFact (rank : Nat) : Float :=
   (0.62).pow (rank + 1).toFloat.log2
 
 def weightFactsSteeply [Inhabited α] (suggestions : Array (α × Float)) : Array (α × Float) :=
-  suggestions.size.fold
-    (λi suggestions' => suggestions'.push (suggestions[i]!.fst, steepWeightOfFact i))
-    (Array.mkEmpty suggestions.size)
+  suggestions.mapIdx
+    (λi suggestion => (suggestion.fst, steepWeightOfFact i))
 
 def normalize (maxFacts : UInt64) : Array (α × Float) → Array (α × Float)
 | #[] => #[]
 | suggestions =>
   let suggestions' := suggestions[:maxFacts.toNat]
-  let avg := suggestions'.foldl (. + Prod.snd .) 0.0 / suggestions'.size.toFloat
+  let avg := suggestions'.foldl (· + ·.snd) 0.0 / suggestions'.size.toFloat
   suggestions.map (Prod.map id (. / avg))
 
 def mesh [Inhabited α] [BEq α] [Hashable α] (maxFacts : UInt64) (suggestionss : List (Float × Array (α × Float))) : Array (α × Float) :=
-  let suggestionss := suggestionss.map $ Prod.map id weightFactsSteeply
-  let suggestionss := suggestionss.map $ Prod.map id (normalize maxFacts)
+  let suggestionss := suggestionss.map $ Prod.map id (normalize maxFacts ∘ weightFactsSteeply)
   let facts := suggestionss.foldl
     (λfacts (_, suggestions) => suggestions.foldl
       (λfacts (fact, _) => facts.insert fact)

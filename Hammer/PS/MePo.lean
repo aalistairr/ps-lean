@@ -46,9 +46,6 @@ structure Context where
 
   pstate : PState
 
-  dbg : Bool := false
-  dbgProofFacts : HashSet UInt64 := ∅
-
 structure State where
   round : UInt64
   p : Float
@@ -148,10 +145,6 @@ private def evalFacts : MepoM (Array (UInt64 × Float) × Array UInt64) := do
   return (candidates, rejects)
 
 partial def mepo : MepoM (Array (UInt64 × Float)) := do
-  if (←read).dbg then
-    (←getStdout).putStrLn (←m!"MePo round {(←get).round} (p = {(←get).p})".toString)
-    -- (←getStdout).putStrLn (←m!"rSyms = {(←get).rSyms.toArray}".toString)
-
   let mut (candidates, rejects) ← evalFacts
   let mut accepts := Array.empty
 
@@ -173,20 +166,6 @@ partial def mepo : MepoM (Array (UInt64 × Float)) := do
     else
       if ¬(score < 0.001 && (←get).round == (←fudge).kickOutHopelessRound) then
         rejects := rejects.push fact
-
-  if (←read).dbg then
-    let mut i := 0
-    for (factI, score) in candidates do
-      if (←read).dbgProofFacts.contains factI then
-        let syms := (←read).pstate.factSymbolss[factI.toNat]!
-        let iSyms ← syms.filterM (λsym => return ¬(←rSyms).contains sym)
-        (←getStdout).putStrLn (←m!"{(←read).pstate.factNames[factI.toNat]!} ({i}): {score} ({iSyms})".toString)
-      i := i + 1
-    for factI in rejects do
-      if (←read).dbgProofFacts.contains factI then
-        (←getStdout).putStrLn (←m!"{(←read).pstate.factNames[factI.toNat]!} rejected".toString)
-
-    (←getStdout).putStrLn (←m!"Accepted {accepts.size} ({acceptedPerfect} perfect) facts in round {(←get).round}".toString)
 
   let decay := (←read).decay
 
